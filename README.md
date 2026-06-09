@@ -334,10 +334,6 @@ curl "http://localhost:5001/api/swap-route?fromToken=XLM&toToken=BTC&amount=50"
 
 MIT License - See LICENSE file for details
 
-## Support & Contributions
-
-For issues, feature requests, or contributions, please visit the [GitHub repository](https://github.com/nova-route/nova-backend).
-
 ---
 
-**NovaRoute Backend v1.0.0** | Grant Submission PoC for GrantFox
+**NovaRoute Backend v1.0.0**
