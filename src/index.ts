@@ -1,7 +1,12 @@
 import express, { Request, Response } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import routerEngine from "./services/routerEngine.js";
+import {
+  parseRouteRequest,
+  calculateRoute,
+  getSupportedTokens,
+  getPoolDetails,
+} from "./services/routerService.js";
 
 dotenv.config();
 
@@ -17,63 +22,107 @@ app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "ok", service: "NovaRoute Backend" });
 });
 
-// Main routing endpoint
-app.get(
-  "/api/swap-route",
-  (req: Request, res: Response): void => {
-    const { fromToken, toToken, amount } = req.query;
+/**
+ * GET /api/route
+ * 
+ * Calculates optimal swap route using modified Dijkstra pathfinding
+ * with Constant Product Formula (CPF) and per-hop fee deduction
+ * 
+ * Query Parameters:
+ *   - tokenIn: Source token symbol (e.g., "XLM")
+ *   - tokenOut: Target token symbol (e.g., "USDC")
+ *   - amountIn: Amount to swap in smallest unit (BigInt precision)
+ * 
+ * Response:
+ *   - 200: Route found with details
+ *   - 400: Invalid parameters
+ *   - 404: No route exists between tokens
+ *   - 500: Server error
+ */
+app.get("/api/route", (req: Request, res: Response): void => {
+  const { tokenIn, tokenOut, amountIn } = req.query;
 
-    // Validate inputs
-    if (!fromToken || !toToken || !amount) {
-      res.status(400).json({
-        error: "Missing required parameters",
-        required: ["fromToken", "toToken", "amount"],
-      });
-      return;
-    }
+  // Parse and validate inputs
+  const parseResult = parseRouteRequest(tokenIn, tokenOut, amountIn);
 
-    const parsedAmount = parseFloat(amount as string);
-
-    if (isNaN(parsedAmount) || parsedAmount <= 0) {
-      res.status(400).json({
-        error: "Amount must be a positive number",
-      });
-      return;
-    }
-
-    const route = routerEngine.findOptimalRoute(
-      (fromToken as string).toUpperCase(),
-      (toToken as string).toUpperCase(),
-      parsedAmount
-    );
-
-    if (!route) {
-      res.status(404).json({
-        error: "No viable route found",
-        fromToken: (fromToken as string).toUpperCase(),
-        toToken: (toToken as string).toUpperCase(),
-      });
-      return;
-    }
-
-    const mockGasFee = "0.00001 XLM";
-
-    res.json({
-      path: route.path,
-      inputAmount: parsedAmount,
-      expectedOutput: Math.round(route.outputAmount * 1e8) / 1e8, // Round to 8 decimals
-      totalFeeAmount: Math.round(route.totalFee * 1e8) / 1e8,
-      feePercentage: ((route.totalFee / parsedAmount) * 100).toFixed(3) + "%",
-      estimatedGas: mockGasFee,
-      hops: route.path.length - 1,
-    });
+  if ("success" in parseResult && !parseResult.success) {
+    res.status(parseResult.statusCode).json(parseResult);
+    return;
   }
-);
+
+  // Type guard: parseResult is now RouteRequest
+  if (!("tokenIn" in parseResult)) {
+    res.status(400).json({ error: "Invalid parse result" });
+    return;
+  }
+
+  // Calculate route
+  const routeResponse = calculateRoute(
+    parseResult.tokenIn,
+    parseResult.tokenOut,
+    parseResult.amountIn
+  );
+
+  if (!routeResponse.success) {
+    res.status(routeResponse.statusCode).json(routeResponse);
+    return;
+  }
+
+  res.status(200).json(routeResponse);
+});
+
+/**
+ * GET /api/tokens
+ * 
+ * List all supported tokens
+ */
+app.get("/api/tokens", (_req: Request, res: Response) => {
+  const tokens = getSupportedTokens();
+  res.json({
+    success: true,
+    data: {
+      tokens,
+      count: tokens.length,
+    },
+  });
+});
+
+/**
+ * GET /api/pool/:poolId
+ * 
+ * Get details of a specific pool
+ */
+app.get("/api/pool/:poolId", (req: Request, res: Response) => {
+  const { poolId } = req.params;
+  const pool = getPoolDetails(poolId);
+
+  if (!pool) {
+    res.status(404).json({
+      success: false,
+      error: "Pool not found",
+      poolId,
+    });
+    return;
+  }
+
+  res.json({
+    success: true,
+    data: {
+      poolId: pool.poolId,
+      tokenA: pool.tokenA,
+      tokenB: pool.tokenB,
+      reserveA: pool.reserveA.toString(),
+      reserveB: pool.reserveB.toString(),
+      feeInBasisPoints: pool.feeInBasisPoints,
+    },
+  });
+});
 
 // Error handling middleware
 app.use((err: Error, _req: Request, res: Response) => {
   console.error("Error:", err.message);
   res.status(500).json({
+    success: false,
     error: "Internal server error",
     message: err.message,
   });
@@ -82,10 +131,13 @@ app.use((err: Error, _req: Request, res: Response) => {
 // 404 handler
 app.use((_req: Request, res: Response) => {
   res.status(404).json({
+    success: false,
     error: "Endpoint not found",
     availableEndpoints: [
       "GET /health",
-      "GET /api/swap-route?fromToken=XLM&toToken=USDC&amount=100",
+      "GET /api/route?tokenIn=XLM&tokenOut=USDC&amountIn=1000000000000000000",
+      "GET /api/tokens",
+      "GET /api/pool/:poolId",
     ],
   });
 });
@@ -93,7 +145,8 @@ app.use((_req: Request, res: Response) => {
 app.listen(PORT, () => {
   console.log(`🚀 NovaRoute Backend running on http://localhost:${PORT}`);
   console.log(`📍 Health check: http://localhost:${PORT}/health`);
+  console.log(`🔄 Routing endpoint: http://localhost:${PORT}/api/route`);
   console.log(
-    `📊 Example route query: http://localhost:${PORT}/api/swap-route?fromToken=XLM&toToken=USDC&amount=100`
+    `📋 Example: http://localhost:${PORT}/api/route?tokenIn=XLM&tokenOut=USDC&amountIn=1000000000000000000`
   );
 });
